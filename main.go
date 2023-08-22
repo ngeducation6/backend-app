@@ -1,93 +1,121 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"sync"
 	"time"
-
-	"github.com/gorilla/handlers"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type Data struct {
-	ID   string `json:"id" bson:"_id"`
-	Name string `json:"name" bson:"name"`
+type Appointment struct {
+	Time     time.Time     `json:"time"`
+	Duration time.Duration `json:"duration"`
+}
+
+var (
+	appointmentFile = "appointment.json" // File to store appointment
+	mutex           sync.RWMutex
+)
+
+func loadAppointment() (Appointment, error) {
+	mutex.RLock()
+	defer mutex.RUnlock()
+
+	var appointment Appointment
+	file, err := os.Open(appointmentFile)
+	if err != nil {
+		return appointment, err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	if err := decoder.Decode(&appointment); err != nil {
+		return appointment, err
+	}
+
+	return appointment, nil
+}
+
+func saveAppointment(appointment Appointment) error {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	file, err := os.Create(appointmentFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	if err := encoder.Encode(appointment); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func SetAppointmentHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	var newAppointment Appointment
+
+	if err := json.NewDecoder(r.Body).Decode(&newAppointment); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("Error decoding JSON: %v", err)
+		return
+	}
+
+	if err := saveAppointment(newAppointment); err != nil {
+		http.Error(w, "Error saving appointment", http.StatusInternalServerError)
+		log.Printf("Error saving appointment: %v", err)
+		return
+	}
+
+	log.Printf("New appointment set: %v", newAppointment)
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+func CheckAppointmentHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT")
+	appointment, err := loadAppointment()
+	if err != nil {
+		http.Error(w, "Error loading appointment", http.StatusInternalServerError)
+		log.Printf("Error loading appointment: %v", err)
+		return
+	}
+
+	currentTime := time.Now()
+	endTime := appointment.Time.Add(appointment.Duration)
+	log.Printf("Appointment Time: %v, Current Time: %v, End Time: %v", appointment.Time, currentTime, endTime)
+
+	if currentTime.After(endTime) {
+		log.Println("Appointment completed")
+		fmt.Fprintln(w, "Appointment completed")
+		return
+	}
+
+	log.Println("Appointment not completed")
+	fmt.Fprintln(w, "Appointment not completed")
 }
 
 func main() {
-	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
-	client, err := mongo.Connect(context.Background(), clientOptions)
-	if err != nil {
-		log.Fatal(err)
-	}
+	http.HandleFunc("/api/set-appointment", SetAppointmentHandler)
+	http.HandleFunc("/api/check-appointment", CheckAppointmentHandler)
 
-	collection := client.Database("testdb").Collection("data")
-
-	// Define CORS options
-	cors := handlers.CORS(
-		handlers.AllowedOrigins([]string{"*"}),
-		handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}),
-		handlers.AllowedHeaders([]string{"Content-Type"}),
-		handlers.ExposedHeaders([]string{}),
-		handlers.AllowCredentials(),
-		handlers.MaxAge(86400),
-	)
-
-	router := http.NewServeMux()
-	router.HandleFunc("/data", func(w http.ResponseWriter, r *http.Request) {
-		log.Println("Received request for /data")
-
-		var result []Data
-
-		cur, err := collection.Find(context.Background(), bson.M{})
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		defer cur.Close(context.Background())
-
-		for cur.Next(context.Background()) {
-			var data Data
-			err := cur.Decode(&data)
-			if err != nil {
-				log.Fatal(err)
-			}
-			result = append(result, data)
-		}
-
-		if err := cur.Err(); err != nil {
-			log.Fatal(err)
-		}
-
-		log.Printf("Retrieved %d documents\n", len(result))
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-
-		if err := json.NewEncoder(w).Encode(result); err != nil {
-			log.Fatal(err)
-		}
-	})
-
-	router.HandleFunc("/hi", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hi")
-	})
-
-	// Apply CORS middleware
-	handler := cors(router)
-
-	server := &http.Server{
-		Addr:         ":8080",
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-	}
-
-	log.Printf("Server running on port %s\n", server.Addr)
-	log.Fatal(server.ListenAndServe())
+	log.Println("Server started at :8080")
+	http.ListenAndServe(":8080", nil)
 }
