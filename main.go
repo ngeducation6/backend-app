@@ -98,7 +98,7 @@ func CheckAppointmentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	currentTime := time.Now()
+	currentTime := time.Now().UTC()
 	endTime := appointment.Time.Add(appointment.Duration)
 	log.Printf("Appointment Time: %v, Current Time: %v, End Time: %v", appointment.Time, currentTime, endTime)
 
