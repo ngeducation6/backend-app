@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -81,6 +82,30 @@ func SetAppointmentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Call the /schedule-appointment API in the scheduler
+	schedulerURL := "http://localhost:3000/schedule-appointment" // Update with actual URL
+	schedulerPayload := struct {
+		AppointmentTime time.Time `json:"appointmentTime"`
+		Message         string    `json:"message"`
+	}{
+		AppointmentTime: newAppointment.Time,
+		Message:         fmt.Sprintf("This is for appointment set for time %v", newAppointment.Time),
+	}
+
+	schedulerPayloadBytes, err := json.Marshal(schedulerPayload)
+	if err != nil {
+		http.Error(w, "Error preparing scheduler payload", http.StatusInternalServerError)
+		log.Printf("Error preparing scheduler payload: %v", err)
+		return
+	}
+
+	_, err = http.Post(schedulerURL, "application/json", bytes.NewReader(schedulerPayloadBytes))
+	if err != nil {
+		http.Error(w, "Error calling scheduler", http.StatusInternalServerError)
+		log.Printf("Error calling scheduler: %v", err)
+		return
+	}
+
 	log.Printf("New appointment set: %v", newAppointment)
 
 	w.WriteHeader(http.StatusCreated)
@@ -112,9 +137,37 @@ func CheckAppointmentHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Appointment not completed")
 }
 
+func WebhookHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Credentials", "true")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	var webhookData struct {
+		AppointmentTime time.Time `json:"appointmentTime"`
+		Message         string    `json:"message"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&webhookData); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Printf("Error decoding JSON: %v", err)
+		return
+	}
+
+	log.Printf("Webhook received: Appointment Time: %v, Message: %s", webhookData.AppointmentTime, webhookData.Message)
+
+	w.WriteHeader(http.StatusOK)
+}
+
 func main() {
 	http.HandleFunc("/api/set-appointment", SetAppointmentHandler)
 	http.HandleFunc("/api/check-appointment", CheckAppointmentHandler)
+	http.HandleFunc("/webhook", WebhookHandler) // New webhook endpoint
 
 	log.Println("Server started at :8080")
 	http.ListenAndServe(":8080", nil)
